@@ -1,0 +1,11 @@
+services:
+  barkbot:
+    build: .
+    container_name: barkbot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    environment:
+      - DB_PATH=/app/data/barkbot.db
+      - TZ=Asia/Shanghai
