@@ -1,3 +1,11 @@
+"""
+管理模块 — 成员的增删改查和测试推送
+
+包含两个 ConversationHandler：
+  - 添加成员（分步引导：用户名 → 显示名称 → Bark Key）
+  - 编辑成员（选择字段 → 输入新值）
+"""
+
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -13,24 +21,32 @@ from handlers.start import main_menu_keyboard, MAIN_MENU_TEXT
 
 logger = logging.getLogger(__name__)
 
-# Conversation states
+# 会话状态常量 — 添加成员流程
 INPUT_USERNAME, INPUT_DISPLAY_NAME, INPUT_BARK_KEY = range(3)
+# 会话状态常量 — 编辑成员流程
 EDIT_VALUE = 10
 
 
 def is_admin(user_id: int) -> bool:
+    """检查用户是否为管理员"""
     return user_id in ADMIN_IDS
 
 
 def _esc(text: str) -> str:
-    """Escape MarkdownV2 special characters."""
+    """转义 MarkdownV2 特殊字符，防止消息发送失败"""
     special = r"_*[]()~`>#+-=|{}.!"
     return "".join(f"\\{c}" if c in special else c for c in text)
 
 
-# ──────────────── Member List ────────────────
+# ──────────────── 成员列表 ────────────────
 
 def member_list_markup():
+    """
+    生成成员列表的文本和按钮布局
+
+    返回: (InlineKeyboardMarkup, str) 或 (None, str) 当无成员时
+    每个成员一行，包含 编辑/测试/删除 三个操作按钮
+    """
     members = get_all_members()
     if not members:
         return None, "📋 *成员列表*\n\n_暂无成员，请先添加_"
@@ -51,12 +67,13 @@ def member_list_markup():
 
 
 async def show_member_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """显示成员列表页面，带 MarkdownV2 格式降级保护"""
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id):
         return
 
-    # Clear any lingering conversation state
+    # 清除可能残留的会话状态，防止会话冲突
     context.user_data.pop("edit_username", None)
     context.user_data.pop("edit_field", None)
     context.user_data.pop("new_username", None)
@@ -76,8 +93,8 @@ async def show_member_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="MarkdownV2",
             )
     except Exception as e:
-        logger.error(f"show_member_list MarkdownV2 error: {e}")
-        # Fallback: send without markdown
+        # MarkdownV2 解析失败时，降级为纯文本显示
+        logger.error(f"show_member_list MarkdownV2 解析失败: {e}")
         plain = text.replace("*", "").replace("\\", "").replace("`", "").replace("_", "")
         await query.edit_message_text(
             plain,
@@ -87,9 +104,10 @@ async def show_member_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# ──────────────── Add Member (Conversation) ────────────────
+# ──────────────── 添加成员（分步会话） ────────────────
 
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """添加成员 — 第 1 步：提示输入 Telegram 用户名"""
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id):
@@ -104,10 +122,12 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def input_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """添加成员 — 第 2 步：接收用户名，校验后提示输入显示名称"""
     username = update.message.text.strip().lstrip("@").lower()
     if not username:
         await update.message.reply_text("⚠️ 用户名不能为空，请重新输入：")
         return INPUT_USERNAME
+    # 检查是否已存在
     if get_member(username):
         await update.message.reply_text(f"⚠️ @{username} 已存在，请输入其他用户名：")
         return INPUT_USERNAME
@@ -122,6 +142,7 @@ async def input_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def input_display_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """添加成员 — 第 3 步：接收显示名称，提示输入 Bark Key"""
     display_name = update.message.text.strip()
     if not display_name:
         await update.message.reply_text("⚠️ 显示名称不能为空，请重新输入：")
@@ -137,6 +158,7 @@ async def input_display_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def input_bark_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """添加成员 — 第 4 步：接收 Bark Key，写入数据库，结束会话"""
     bark_key = update.message.text.strip()
     if not bark_key:
         await update.message.reply_text("⚠️ Bark Key 不能为空，请重新输入：")
@@ -167,6 +189,7 @@ async def input_bark_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """取消当前会话（添加/编辑），清除临时数据，返回主菜单"""
     query = update.callback_query
     await query.answer()
     context.user_data.pop("new_username", None)
@@ -180,9 +203,10 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
-# ──────────────── Edit Member ────────────────
+# ──────────────── 编辑成员 ────────────────
 
 async def edit_member_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """编辑成员 — 显示当前信息和可修改字段按钮"""
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id):
@@ -195,6 +219,7 @@ async def edit_member_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     context.user_data["edit_username"] = username
+    # Bark Key 脱敏显示，只展示前 6 位
     masked_key = member["bark_key"][:6] + "..." if len(member["bark_key"]) > 6 else "***"
     await query.edit_message_text(
         f"✏️ 修改成员信息\n\n"
@@ -214,6 +239,7 @@ async def edit_member_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def edit_select_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """编辑成员 — 选择要修改的字段，提示输入新值"""
     query = update.callback_query
     await query.answer()
 
@@ -231,6 +257,7 @@ async def edit_select_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def edit_input_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """编辑成员 — 接收新值，更新数据库，结束会话"""
     value = update.message.text.strip()
     username = context.user_data.pop("edit_username", "")
     field = context.user_data.pop("edit_field", "")
@@ -254,9 +281,10 @@ async def edit_input_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# ──────────────── Delete Member ────────────────
+# ──────────────── 删除成员 ────────────────
 
 async def delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """删除成员 — 二次确认"""
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id):
@@ -282,17 +310,20 @@ async def delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def delete_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """删除成员 — 执行删除并刷新列表"""
     query = update.callback_query
     if not is_admin(query.from_user.id):
         await query.answer()
         return
 
     username = query.data.split(":")[1]
+    # 先 answer 并显示删除结果（只能调用一次 answer）
     if remove_member(username):
         await query.answer("✅ 已删除", show_alert=True)
     else:
         await query.answer("⚠️ 删除失败", show_alert=True)
 
+    # 刷新成员列表显示
     markup, text = member_list_markup()
     try:
         if markup:
@@ -306,7 +337,8 @@ async def delete_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]),
             )
     except Exception as e:
-        logger.error(f"delete_execute display error: {e}")
+        # MarkdownV2 解析失败时的降级处理
+        logger.error(f"delete_execute 显示异常: {e}")
         await query.edit_message_text(
             "📋 成员列表（已更新）",
             reply_markup=InlineKeyboardMarkup([
@@ -316,9 +348,10 @@ async def delete_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# ──────────────── Test Push ────────────────
+# ──────────────── 测试推送 ────────────────
 
 async def test_select_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """测试推送 — 选择目标成员"""
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id):
@@ -349,6 +382,7 @@ async def test_select_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def test_select_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """测试推送 — 选择通知级别"""
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id):
@@ -377,6 +411,7 @@ async def test_select_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def test_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """测试推送 — 执行推送并显示结果"""
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id):

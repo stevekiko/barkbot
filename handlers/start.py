@@ -1,3 +1,7 @@
+"""
+启动与菜单模块 — 处理 /start 命令和主菜单导航
+"""
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
@@ -5,6 +9,7 @@ from config import ADMIN_IDS
 
 
 def main_menu_keyboard():
+    """生成主菜单按钮布局"""
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("➕ 添加成员", callback_data="menu:add"),
@@ -17,8 +22,10 @@ def main_menu_keyboard():
     ])
 
 
+# 主菜单文本
 MAIN_MENU_TEXT = "🔔 BarkBot 管理面板\n\n选择操作："
 
+# 帮助信息文本
 HELP_TEXT = (
     "ℹ️ 使用帮助\n\n"
     "【管理面板（私聊 Bot）】\n"
@@ -37,6 +44,7 @@ HELP_TEXT = (
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /start 命令 — 仅管理员可使用，显示主菜单"""
     user = update.effective_user
     if user.id not in ADMIN_IDS:
         await update.message.reply_text("⛔ 仅管理员可使用此 Bot")
@@ -48,15 +56,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理主菜单按钮回调（帮助 / 返回主菜单）"""
     query = update.callback_query
     await query.answer()
 
+    # 权限校验
     if query.from_user.id not in ADMIN_IDS:
         return
 
     action = query.data.split(":")[1] if ":" in query.data else ""
 
     if action == "help":
+        # 显示帮助信息
         await query.edit_message_text(
             HELP_TEXT,
             reply_markup=InlineKeyboardMarkup([
@@ -64,6 +75,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]),
         )
     elif action == "back":
+        # 返回主菜单
         await query.edit_message_text(
             MAIN_MENU_TEXT,
             reply_markup=main_menu_keyboard(),

@@ -1,3 +1,13 @@
+"""
+群组通知模块 — 处理群组中的 @提醒 和推送回调
+
+工作流程：
+  1. 用户在群组中 @某成员
+  2. Bot 弹出通知级别选择按钮（普通/优先/紧急）
+  3. 用户点击按钮触发推送（紧急通知需二次确认）
+  4. 推送成功后记录日志，紧急推送额外通知管理员
+"""
+
 import logging
 from datetime import datetime
 
@@ -12,37 +22,46 @@ logger = logging.getLogger(__name__)
 
 
 async def log_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """记录群组 ID 到日志，方便配置 ALLOWED_GROUPS 白名单"""
     chat = update.effective_chat
     if chat:
         logger.info(f"群组消息 - 群组: {chat.title} (ID: {chat.id})")
 
 
 async def handle_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    处理群组中的 @提醒
+
+    检测消息中的 @username，如果该用户已注册 Bark，
+    则弹出通知级别选择按钮。仅在群组/超级群组中生效。
+    """
     message = update.message
     if not message or not message.text:
         return
 
     chat = message.chat
 
-    # Only work in group/supergroup chats
+    # 仅在群组/超级群组中生效，私聊不触发
     if chat.type not in ("group", "supergroup"):
         return
 
-    # Check group whitelist
+    # 群组白名单校验（ALLOWED_GROUPS 为空则不限制）
     if ALLOWED_GROUPS and chat.id not in ALLOWED_GROUPS:
         return
 
-    # Extract @mentions
+    # 从消息实体中提取所有 @提醒
     mentions = set()
     if message.entities:
         for entity in message.entities:
             if entity.type == "mention":
+                # 去掉 @ 前缀，转小写
                 username = message.text[entity.offset + 1 : entity.offset + entity.length].lower()
                 mentions.add(username)
 
     if not mentions:
         return
 
+    # 为每个已注册的被@成员弹出推送按钮
     for username in mentions:
         member = get_member(username)
         if member:
@@ -63,20 +82,28 @@ async def handle_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_push_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    处理推送按钮的回调
+
+    回调数据格式：
+      - push:{username}:{level}     — 发起推送
+      - critical_yes:{username}     — 确认紧急推送
+      - critical_no:{username}      — 取消紧急推送
+    """
     query = update.callback_query
     data = query.data
     if not data:
         await query.answer()
         return
 
-    # Handle critical confirm
+    # 处理紧急推送确认
     if data.startswith("critical_yes:"):
         await query.answer()
         username = data.split(":")[1]
         await _do_push(query, context, username, 3)
         return
 
-    # Handle critical cancel
+    # 处理紧急推送取消
     if data.startswith("critical_no:"):
         await query.answer()
         username = data.split(":")[1]
@@ -85,10 +112,12 @@ async def handle_push_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text(f"❌ 已取消向 {name} 发送紧急通知")
         return
 
+    # 非 push: 开头的回调忽略
     if not data.startswith("push:"):
         await query.answer()
         return
 
+    # 解析回调数据：push:{username}:{level}
     parts = data.split(":")
     if len(parts) != 3:
         await query.answer()
@@ -103,7 +132,7 @@ async def handle_push_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await query.answer()
 
-    # Level 3 (critical) needs confirmation warning
+    # 紧急通知（级别 3）需要二次确认
     if level == 3:
         member = get_member(username)
         if not member:
@@ -113,7 +142,7 @@ async def handle_push_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         now = datetime.now()
         hour = now.hour
 
-        # Extra warning during rest hours (22:00 - 08:00)
+        # 休息时段（22:00-08:00）额外警告
         if hour >= 22 or hour < 8:
             time_warning = "\n\n🌙 当前是休息时间，请三思！"
         else:
@@ -136,10 +165,16 @@ async def handle_push_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    # 普通/优先通知直接推送
     await _do_push(query, context, username, level)
 
 
 async def _do_push(query, context, username, level):
+    """
+    执行 Bark 推送
+
+    推送成功后记录日志；紧急推送额外通知所有管理员。
+    """
     member = get_member(username)
     if not member:
         await query.edit_message_text(f"⚠️ @{username} 已被移除")
@@ -149,6 +184,7 @@ async def _do_push(query, context, username, level):
     label = LEVEL_LABELS[level]
 
     if success:
+        # 记录推送日志
         log_push(username, level, query.from_user.id)
         sender_name = query.from_user.full_name or query.from_user.username or "未知"
         now = datetime.now().strftime("%H:%M")
@@ -159,7 +195,7 @@ async def _do_push(query, context, username, level):
             f"🕐 {now}"
         )
 
-        # Notify admins for critical push
+        # 紧急推送额外通知管理员
         if level == 3:
             await notify_admins_critical(
                 context,
@@ -177,6 +213,7 @@ async def _do_push(query, context, username, level):
 
 
 async def notify_admins_critical(context, sender, target_name, target_username, chat):
+    """紧急推送后私聊通知所有管理员，记录发送人、目标、群组、时间"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     sender_name = sender.full_name or sender.username or str(sender.id)
     chat_title = chat.title if chat else "未知群组"
